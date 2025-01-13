@@ -1,0 +1,246 @@
+#include <M5Stack.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+
+#define RCWL_PIN 16
+#define BUTTON_PIN 26
+#define LED_PIN 5
+
+
+// Configuration réseau
+const char* ssid = "Groupe1";
+const char* password = "motdepasse";
+
+// Configuration serveur
+const char* serverIP = "192.168.4.1"; // Adresse IP du serveur
+const int serverPort = 80;
+String authToken = "1234567890abcdef"; // Token d'authentification
+
+
+bool isClosed = true;           // État de la porte
+unsigned long lastCheck = 0;    // Temps du dernier check
+int lastMotionState = LOW;      // Dernier état du capteur RCWL
+bool buttonState = false;
+bool lastButtonState = false;
+unsigned long lastDebounceTime = 0; // Temps de la dernière détection du bouton
+const int debounceDelay = 50;   // Délai pour le debouncing (ms)
+int motionDetected = digitalRead(RCWL_PIN);
+
+// value alarme
+bool isTriggered = false;
+
+// SETUP
+void setup() {
+  M5.begin();
+  Serial.begin(115200); // Initialisation de la communication série
+  pinMode(RCWL_PIN, INPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP); // Résistance pull-up interne pour le bouton
+  pinMode(LED_PIN, OUTPUT);
+
+  M5.Lcd.clear(); // Efface l'écran au démarrage
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.setCursor(0, 0);
+  M5.Lcd.println("Connexion WiFi...");
+
+  // connexion WIFI
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    M5.Lcd.print(".");
+  }
+
+  M5.Lcd.println(WiFi.localIP());
+  postDataToServer();
+  postDataAlarm();
+}
+
+// FONCTION ENVOI DES DONNEES de d'alarme
+void postDataAlarm() {
+  if (WiFi.status() == WL_CONNECTED) {
+    delay(5);
+    HTTPClient http;
+
+    // Construction de l'URL
+    String url = String("http://") + serverIP + ":" + serverPort + "/api";
+
+    // Requête pour "Alarme"
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("token", authToken);
+
+    StaticJsonDocument<200> alarmDoc;
+    alarmDoc["id"] = "Alarm";
+    alarmDoc["status"] = isTriggered ? "no" : "yes";
+
+    String alarmRequestBody;
+    serializeJson(alarmDoc, alarmRequestBody);
+
+    int alarmHttpResponseCode = http.POST(alarmRequestBody);
+
+    if (alarmHttpResponseCode > 0) {
+      String alarmResponse = http.getString();
+      M5.Lcd.setCursor(0, 170);
+      M5.Lcd.printf("Reponse Alarm: %s", alarmResponse.c_str());
+    } else {
+      M5.Lcd.setCursor(0, 170);
+      M5.Lcd.printf("Erreur POST Alarm: %d", alarmHttpResponseCode);
+    }
+
+    http.end();
+  } else {
+    M5.Lcd.println("Connexion WiFi perdue");
+  }
+}
+
+// envoie donnes porte/mouvement
+void postDataToServer() {
+  if (WiFi.status() == WL_CONNECTED) {
+    delay(50);
+    HTTPClient http;
+
+    // Construction de l'URL
+    String url1 = String("http://") + serverIP + ":" + serverPort + "/api";
+    // String url2 = String("http://") + serverIP + ":" + serverPort + "/api-motionsensor";
+
+    // Requête pour "Door"
+    http.begin(url1);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("token", authToken);
+
+    StaticJsonDocument<200> doorDoc;
+    doorDoc["id"] = "Door";
+    doorDoc["status"] = isClosed ? "no" : "yes";
+
+    String doorRequestBody;
+    serializeJson(doorDoc, doorRequestBody);
+
+    int doorHttpResponseCode = http.POST(doorRequestBody);
+
+    if (doorHttpResponseCode > 0) {
+      String doorResponse = http.getString();
+      M5.Lcd.setCursor(0, 100);
+      M5.Lcd.printf("Reponse Door: %s", doorResponse.c_str());
+    } else {
+      M5.Lcd.setCursor(0, 100);
+      M5.Lcd.printf("Erreur POST Door: %d", doorHttpResponseCode);
+    }
+
+    http.end();
+
+    // Requête pour "MotionSensor"
+    http.begin(url1); // Redémarrage de la connexion HTTP
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("token", authToken);
+
+    StaticJsonDocument<200> motionDoc;
+    motionDoc["id"] = "MotionSensor";
+    motionDoc["status"] = motionDetected ? "yes" : "no";
+
+    String motionRequestBody;
+    serializeJson(motionDoc, motionRequestBody);
+
+    int motionHttpResponseCode = http.POST(motionRequestBody);
+
+    if (motionHttpResponseCode > 0) {
+      String motionResponse = http.getString();
+      M5.Lcd.setCursor(0, 160);
+      M5.Lcd.printf("Reponse MotionSensor: %s", motionResponse.c_str());
+    } else {
+      M5.Lcd.setCursor(0, 160);
+      M5.Lcd.printf("Erreur POST MotionSensor: %d", motionHttpResponseCode);
+    }
+
+    M5.Lcd.setCursor(0, 200);
+    http.end();
+  } else {
+    M5.Lcd.println("Connexion WiFi perdue");
+  }
+}
+
+
+// LOOP
+void loop() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+  }
+  M5.update(); // Met à jour l'état des boutons et de l'écran
+
+  unsigned long t = millis();
+
+  // Lire l'état du bouton
+  bool currentButtonState = digitalRead(BUTTON_PIN) == LOW; // LOW = bouton appuyé (mode pull-up)
+
+  // Gestion du debounce
+  if (currentButtonState != lastButtonState) {
+    lastDebounceTime = t; // Met à jour le temps si l'état change
+  }
+
+  if ((t - lastDebounceTime) > debounceDelay) {
+    // Si l'état du bouton a changé après le délai
+    if (currentButtonState != buttonState) {
+      buttonState = currentButtonState;
+
+      // Si le bouton est pressé (LOW) et était relâché
+      if (buttonState == true) {
+        // Alterner l'état de la porte uniquement à la pression
+        isClosed = !isClosed;
+        isTriggered = false;
+
+        // Mise à jour de l'affichage
+        M5.Lcd.fillRect(0, 0, 320, 40, BLACK);
+        M5.Lcd.setCursor(0, 0);
+        if (isClosed) {
+          M5.Lcd.println("Porte ouverte");
+          
+        } else {
+          M5.Lcd.println("Porte fermee");
+        }
+        
+        gestionAlarm();
+        postDataToServer();
+      }
+    }
+  }
+  
+  lastButtonState = currentButtonState;
+
+  // Gestion de l'affichage du capteur RCWL
+  motionDetected = digitalRead(RCWL_PIN);
+  if (motionDetected != lastMotionState) {
+    M5.Lcd.setCursor(0, 50);
+    if (motionDetected == HIGH) {
+      M5.Lcd.fillRect(0, 50, 320, 40, BLACK);
+      M5.Lcd.println("Mouvement detecte!");
+    } else {
+      M5.Lcd.fillRect(0, 50, 320, 40, BLACK);
+      M5.Lcd.println("Pas de mouvement.");
+    }
+    lastMotionState = motionDetected;
+    gestionAlarm();
+    postDataToServer();
+  }
+}
+
+void gestionAlarm() {
+  //Gestion Alarme
+  if (motionDetected && isClosed) {
+    isTriggered = true;
+  } else {
+    isTriggered = false;
+  }
+
+  if(isTriggered) {
+    M5.Lcd.setCursor(0, 70);
+    M5.Lcd.fillRect(0, 70, 320, 40, BLACK);
+    M5.Lcd.println("Alarme ON");
+    digitalWrite(LED_PIN, HIGH);
+    postDataAlarm();
+    } else {
+      M5.Lcd.setCursor(0, 70);
+      M5.Lcd.fillRect(0, 70, 320, 40, BLACK);
+      digitalWrite(LED_PIN, LOW);
+      M5.Lcd.println("Alarme OFF");
+      postDataAlarm();
+    }
+}

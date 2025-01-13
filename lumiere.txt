@@ -1,0 +1,161 @@
+#include <M5Stack.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+
+// Configuration réseau
+const char* ssid = "Groupe1";
+const char* password = "motdepasse";
+
+// Configuration serveur
+const char* serverIP = "192.168.4.1"; // Adresse IP du serveur
+const int serverPort = 80;
+String authToken = "1234567890abcdef"; // Token d'authentification
+
+// Configuration de la barre de lumière
+int lumen = 400;
+int tmpLumen = 0;
+bool light = true;
+
+const int screenWidth = 320;
+const int screenHeight = 240;
+const int barHeight = 20;
+const int barWidthMax = 240;
+const int barX = (screenWidth - barWidthMax) / 2;
+const int barY = (screenHeight - barHeight) / 2;
+
+// Configuration LED
+const int ledPin = 5;
+const int pwmChannel = 0;
+const int pwmFreq = 5000;
+const int pwmResolution = 8;
+
+void setup() {
+  M5.begin();
+  M5.Lcd.setTextSize(2);
+  M5.Lcd.println("Connexion WiFi...");
+
+  // Connexion Wi-Fi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    M5.Lcd.print(".");
+  }
+  M5.Lcd.println("\nConnecté !");
+  M5.Lcd.print("IP : ");
+  M5.Lcd.println(WiFi.localIP());
+
+  // Initialisation LED
+  ledcSetup(pwmChannel, pwmFreq, pwmResolution);
+  ledcAttachPin(ledPin, pwmChannel);
+
+  M5.Lcd.fillScreen(TFT_BLACK);
+  M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Lcd.setTextSize(2);
+
+  drawLumenBar(lumen);
+  updateLedIntensity();
+  postDataToServer();
+}
+
+void loop() {
+  M5.update();
+
+  // Bouton B : Allumer/éteindre
+  if (M5.BtnB.wasPressed()) {
+    if (light) {
+      tmpLumen = lumen;
+      lumen = 0;
+      light = false;
+    } else {
+      lumen = tmpLumen;
+      tmpLumen = 0;
+      light = true;
+    }
+    drawLumenBar(lumen);
+    updateLedIntensity();
+    postDataToServer();
+  }
+
+  // Bouton A : Diminuer
+  while (M5.BtnA.read() == 1 && light && lumen > 50) {
+    lumen = max(0, lumen - 50);
+    drawLumenBar(lumen);
+    updateLedIntensity();
+    postDataToServer();
+    delay(100);
+  }
+
+  // Bouton C : Augmenter
+  while (M5.BtnC.read() == 1 && light) {
+    lumen = min(1000, lumen + 50);
+    drawLumenBar(lumen);
+    updateLedIntensity();
+    postDataToServer();
+    delay(100);
+  }
+
+  delay(20);
+}
+
+// Fonction pour ajuster l'intensité de la LED
+void updateLedIntensity() {
+  int pwmValue = map(lumen, 0, 1000, 0, 255);
+  ledcWrite(pwmChannel, pwmValue);
+}
+
+// Fonction pour dessiner la barre de lumière
+void drawLumenBar(int lumen) {
+  int maxLumen = 1000;
+  int barWidth = map(lumen, 0, maxLumen, 0, barWidthMax);
+
+  M5.Lcd.fillRect(barX, barY, barWidthMax, barHeight + 30, TFT_BLACK);
+
+  if (lumen > 0) {
+    M5.Lcd.fillRect(barX, barY, barWidth, barHeight, TFT_YELLOW);
+    M5.Lcd.drawRect(barX, barY, barWidthMax, barHeight, TFT_WHITE);
+    M5.Lcd.setCursor((screenWidth - 100) / 2, barY + barHeight + 10);
+    M5.Lcd.printf("Lumens: %d", lumen);
+  } else {
+    M5.Lcd.setCursor((screenWidth - 120) / 2, barY + barHeight + 10);
+    M5.Lcd.print("Lumieres OFF");
+  }
+}
+
+// Fonction pour envoyer les données au serveur
+void postDataToServer() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+
+    // Construction de l'URL
+    String url = String("http://") + serverIP + ":" + serverPort + "/api-light";
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("token", authToken);
+
+    // Préparation des données JSON
+    StaticJsonDocument<200> doc;
+    doc["id"] = "light";
+    doc["value"] = lumen;
+    doc["units"] = "lumens";
+    doc["status"] = light ? "on" : "off";
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+
+    // Envoi des données
+    int httpResponseCode = http.POST(requestBody);
+
+    if (httpResponseCode > 0) {
+      String response = http.getString();
+      M5.Lcd.setCursor(0, 200);
+      M5.Lcd.printf("Reponse: %s", response.c_str());
+    } else {
+      M5.Lcd.setCursor(0, 200);
+      M5.Lcd.printf("Erreur POST: %d", httpResponseCode);
+    }
+    http.end();
+  } else {
+    M5.Lcd.println("Connexion WiFi perdue");
+  }
+}
